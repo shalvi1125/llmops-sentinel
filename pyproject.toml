@@ -14,7 +14,7 @@ description = "LLMOps Sentinel — Local RAG Diagnostics, Evaluation & LLMOps Co
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "fastapi==0.135.3",
+  "fastapi==0.162.0",
   "uvicorn[standard]==0.41.0",
   "python-multipart==0.0.26",
   "langchain==1.2.15",
