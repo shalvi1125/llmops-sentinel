@@ -8,11 +8,11 @@ markers = [
 ]
 
 [project]
-name = "ragscope"
-version = "0.1.0"
-description = "Add your description here"
+name = "llmops-sentinel"
+version = "2.0.0"
+description = "LLMOps Sentinel — Local RAG Diagnostics, Evaluation & LLMOps Control Centre"
 readme = "README.md"
-requires-python = ">=3.13.8"
+requires-python = ">=3.11"
 dependencies = [
   "fastapi==0.135.3",
   "uvicorn[standard]==0.41.0",

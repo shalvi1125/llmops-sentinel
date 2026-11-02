@@ -1,8 +1,40 @@
+# Environments & Secrets
 .env
-mlflow
-__init__.py
-__pycache__
-.python-version
-uv.lock
+.env.*
+!.env.example
+.venv/
+venv/
+ENV/
+
+# Python & Testing
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 .deepeval/
+
+# Data & Persistence
+.chroma/
+chroma_db/
+chroma_data/
 mlflow.db
+mlflow-artifacts/
+benchmarks_history.json
+
+# Node & Frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.npm
+*.log
+
+# Scratch & IDE
+scratch/
+.idea/
+.vscode/
+.zed/
+.DS_Store
+Thumbs.db
