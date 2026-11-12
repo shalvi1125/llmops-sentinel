@@ -21,9 +21,16 @@ import { SourceCitation } from './SourceCitation';
 interface ModelArenaProps {
   apiKey: string;
   prompts: PromptStrategy[];
+  selectedDocument?: string | null;
+  onClearSelectedDocument?: () => void;
 }
 
-export const ModelArena: React.FC<ModelArenaProps> = ({ apiKey, prompts }) => {
+export const ModelArena: React.FC<ModelArenaProps> = ({
+  apiKey,
+  prompts,
+  selectedDocument = null,
+  onClearSelectedDocument,
+}) => {
   const [question, setQuestion] = useState('');
   const [topK, setTopK] = useState(3);
   const [promptId, setPromptId] = useState('default_qa');
@@ -46,7 +53,7 @@ export const ModelArena: React.FC<ModelArenaProps> = ({ apiKey, prompts }) => {
     const step2Timer = setTimeout(() => setLoadingStep('mistral'), 8000);
 
     try {
-      const data = await compareModels(q, topK, promptId, apiKey);
+      const data = await compareModels(q, topK, promptId, apiKey, selectedDocument);
       clearTimeout(step1Timer);
       clearTimeout(step2Timer);
       setComparisonResult(data);
@@ -68,9 +75,9 @@ export const ModelArena: React.FC<ModelArenaProps> = ({ apiKey, prompts }) => {
   };
 
   const sampleQuestions = [
-    'What is LLMOps Sentinel and what database does it use?',
-    'Which local models are used for generation, judge evaluation, and embeddings?',
-    'How does zero-latency preemption prevent query timeouts during long judge evaluations?',
+    'What is this document about and what problem does it solve?',
+    'Summarize the system architecture and core components described in the document.',
+    'What are the key methodologies, results, or future scope mentioned?',
   ];
 
   // Helper to extract Llama and Mistral results
@@ -110,10 +117,32 @@ export const ModelArena: React.FC<ModelArenaProps> = ({ apiKey, prompts }) => {
     <div className="bg-slate-900/60 border border-slate-800 rounded-xl flex flex-col h-full overflow-hidden">
       {/* Top Header & Strategy Config */}
       <div className="px-5 py-3.5 border-b border-slate-800 bg-slate-950/40 flex flex-wrap items-center justify-between gap-3 text-xs">
-        <div className="flex items-center space-x-2">
-          <Swords className="w-4 h-4 text-sky-400" />
-          <span className="font-semibold text-slate-200">Local Model Arena</span>
-          <span className="text-slate-400">· Side-by-Side Dual Inference</span>
+        <div className="flex items-center space-x-2 min-w-0">
+          <Swords className="w-4 h-4 text-sky-400 shrink-0" />
+          <span className="font-semibold text-slate-200 shrink-0">Local Model Arena</span>
+          <span
+            className={`text-[10px] font-mono px-2 py-0.5 rounded border truncate max-w-[200px] ${
+              selectedDocument
+                ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                : 'bg-slate-800/80 text-slate-400 border-slate-700'
+            }`}
+            title={
+              selectedDocument
+                ? `Comparison strictly isolated to: ${selectedDocument}`
+                : 'Comparing across all indexed documents in ChromaDB'
+            }
+          >
+            Scope: {selectedDocument || 'All Docs'}
+          </span>
+          {selectedDocument && onClearSelectedDocument && (
+            <button
+              onClick={onClearSelectedDocument}
+              className="text-[10px] text-slate-400 hover:text-slate-200 underline font-mono shrink-0"
+              title="Compare across all indexed documents"
+            >
+              All
+            </button>
+          )}
         </div>
 
         <div className="flex items-center space-x-3">
@@ -179,7 +208,7 @@ export const ModelArena: React.FC<ModelArenaProps> = ({ apiKey, prompts }) => {
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleCompare()}
-              placeholder="e.g. What is LLMOps Sentinel and what database does it use?"
+              placeholder="e.g. What is this project about and what architecture does it use?"
               disabled={isLoading}
               className="flex-1 bg-slate-900 border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-sky-500 font-sans"
             />
@@ -280,22 +309,50 @@ export const ModelArena: React.FC<ModelArenaProps> = ({ apiKey, prompts }) => {
           <div className="space-y-4">
             {/* Visual Differential KPI Summary */}
             {fasterModel && (
-              <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center space-x-2">
-                  <TrendingDown className="w-4 h-4 text-emerald-400" />
-                  <span className="text-xs font-semibold text-slate-200">
-                    Latency Differential:
-                  </span>
-                  <span className="text-xs font-bold text-emerald-400 font-mono">
-                    {fasterModel} is {latencyDiffMs} ms faster ({latencyDiffPct}% speedup)
-                  </span>
+              <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center space-x-2">
+                    <TrendingDown className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-semibold text-slate-200">
+                      Latency Differential:
+                    </span>
+                    <span className="text-xs font-bold text-emerald-400 font-mono">
+                      {fasterModel} is {latencyDiffMs} ms faster ({latencyDiffPct}% speedup)
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] text-slate-400 font-mono">
+                    Context Retrieval Latency:{' '}
+                    <span className="text-sky-300">
+                      {comparisonResult.retrieval_diagnostics.retrieval_latency_ms} ms
+                    </span>
+                  </div>
                 </div>
 
-                <div className="text-[11px] text-slate-400 font-mono">
-                  Context Retrieval Latency:{' '}
-                  <span className="text-sky-300">
-                    {comparisonResult.retrieval_diagnostics.retrieval_latency_ms} ms
+                {/* Shared Prompt, Context & CPU Generation Settings */}
+                <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-400">
+                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-indigo-300">
+                    Prompt: {comparisonResult.prompt_id} v{comparisonResult.prompt_version}
                   </span>
+                  {comparisonResult.context_char_count !== undefined &&
+                    comparisonResult.context_char_count !== null && (
+                      <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-sky-300">
+                        Compacted Context: {comparisonResult.context_char_count} chars
+                      </span>
+                    )}
+                  {comparisonResult.document_scope && (
+                    <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300">
+                      Scope: {comparisonResult.document_scope}
+                    </span>
+                  )}
+                  {comparisonResult.generation_settings && (
+                    <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-emerald-300">
+                      Settings: temp={comparisonResult.generation_settings.temperature} · num_ctx=
+                      {comparisonResult.generation_settings.num_ctx} · num_predict=
+                      {comparisonResult.generation_settings.num_predict} · threads=
+                      {comparisonResult.generation_settings.num_thread}
+                    </span>
+                  )}
                 </div>
               </div>
             )}

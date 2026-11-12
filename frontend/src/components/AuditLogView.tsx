@@ -6,6 +6,9 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  AlertOctagon,
+  Ban,
+  HelpCircle,
   ChevronDown,
   ChevronUp,
   ExternalLink,
@@ -25,7 +28,9 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pass' | 'fail' | 'skipped'>('all');
+  const [statusFilter, setStatusFilter] = useState<
+    'all' | 'pass' | 'fail' | 'cancelled' | 'skipped' | 'incomplete'
+  >('all');
   const [sortBy, setSortBy] = useState<'newest' | 'longest' | 'shortest'>('newest');
   const [error, setError] = useState<string | null>(null);
 
@@ -47,22 +52,46 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
     fetchTraces();
   }, [apiKey]);
 
-  // Aggregate stats across traces
+  const EXPECTED_METRICS = ['AnswerRelevancy', 'Hallucination', 'Safety'] as const;
+
+  type AssessmentState = 'pass' | 'fail' | 'error' | 'cancelled' | 'skipped' | 'incomplete';
+
+  const classifyAssessment = (val?: string | null): AssessmentState => {
+    const normalized = (val || '').trim().toLowerCase();
+    if (normalized === 'yes') return 'pass';
+    if (normalized === 'no') return 'fail';
+    if (normalized === 'error') return 'error';
+    if (normalized === 'cancelled') return 'cancelled';
+    if (normalized === 'skipped') return 'skipped';
+    return 'incomplete';
+  };
+
+  // Aggregate stats across traces (keep pass rate strictly over evaluated yes/no verdicts)
   let totalPass = 0;
   let totalFail = 0;
+  let totalError = 0;
+  let totalCancelled = 0;
   let totalSkipped = 0;
+  let totalIncomplete = 0;
 
   traces.forEach((t) => {
-    Object.values(t.assessments).forEach((a) => {
-      const val = (a.value || '').toLowerCase();
-      if (val === 'yes') totalPass++;
-      else if (val === 'no') totalFail++;
-      else totalSkipped++;
+    const metricKeys = Array.from(
+      new Set<string>([...EXPECTED_METRICS, ...Object.keys(t.assessments || {})])
+    );
+    metricKeys.forEach((key) => {
+      const state = classifyAssessment(t.assessments?.[key]?.value);
+      if (state === 'pass') totalPass++;
+      else if (state === 'fail') totalFail++;
+      else if (state === 'error') totalError++;
+      else if (state === 'cancelled') totalCancelled++;
+      else if (state === 'skipped') totalSkipped++;
+      else totalIncomplete++;
     });
   });
 
-  const totalAssessments = totalPass + totalFail + totalSkipped;
-  const passRate = totalAssessments > 0 ? Math.round((totalPass / totalAssessments) * 100) : null;
+  const totalEvaluated = totalPass + totalFail;
+  const totalFailed = totalFail + totalError;
+  const passRate = totalEvaluated > 0 ? Math.round((totalPass / totalEvaluated) * 100) : null;
   const latencies = traces.map((t) => t.execution_time_ms).filter((ms) => ms > 0);
   const meanLatency =
     latencies.length > 0 ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : null;
@@ -82,15 +111,36 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
       // Status filter
       if (statusFilter === 'all') return true;
 
-      const values = Object.values(t.assessments).map((a) => (a.value || '').toLowerCase());
+      const metricKeys = Array.from(
+        new Set<string>([...EXPECTED_METRICS, ...Object.keys(t.assessments || {})])
+      );
+      const states = metricKeys.map((k) => classifyAssessment(t.assessments?.[k]?.value));
+
+      const hasPass = states.includes('pass');
+      const hasFail = states.includes('fail');
+      const hasError = states.includes('error');
+      const hasCancelled = states.includes('cancelled');
+      const hasSkipped = states.includes('skipped');
+      const hasIncomplete = states.includes('incomplete');
+
       if (statusFilter === 'pass') {
-        return values.includes('yes') && !values.includes('no');
+        return hasPass && !hasFail && !hasError && !hasCancelled && !hasSkipped && !hasIncomplete;
       }
       if (statusFilter === 'fail') {
-        return values.includes('no');
+        return hasFail || hasError || t.evaluation_status === 'failed';
+      }
+      if (statusFilter === 'cancelled') {
+        return t.evaluation_status === 'cancelled' || hasCancelled;
       }
       if (statusFilter === 'skipped') {
-        return values.some((v) => v === 'skipped' || v === 'null');
+        return t.evaluation_status === 'skipped' || hasSkipped;
+      }
+      if (statusFilter === 'incomplete') {
+        return (
+          t.evaluation_status === 'pending' ||
+          t.evaluation_status === 'running' ||
+          hasIncomplete
+        );
       }
       return true;
     })
@@ -100,54 +150,82 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
       return b.timestamp_ms - a.timestamp_ms; // newest
     });
 
-  const getVerdictBadge = (name: string, valObj?: { value: string; rationale: string | null }) => {
-    if (!valObj) {
-      return (
-        <span className="text-[10px] text-slate-500 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono">
-          {name}: —
-        </span>
-      );
-    }
-    const val = valObj.value.toLowerCase();
-    if (val === 'yes') {
+  const getVerdictBadge = (
+    name: string,
+    valObj?: { value: string; rationale: string | null },
+    evalStatus?: string | null
+  ) => {
+    const state = classifyAssessment(valObj?.value);
+    const title = valObj?.rationale || valObj?.value || 'No assessment recorded';
+
+    if (state === 'pass') {
       return (
         <span
           className="text-[10px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-medium flex items-center space-x-1 font-mono"
-          title={valObj.rationale || ''}
+          title={title}
         >
           <CheckCircle2 className="w-2.5 h-2.5 mr-0.5 text-emerald-400" />
           <span>{name}: Yes</span>
         </span>
       );
     }
-    if (val === 'no') {
+    if (state === 'fail') {
       return (
         <span
           className="text-[10px] bg-rose-500/15 text-rose-400 border border-rose-500/30 px-2 py-0.5 rounded font-medium flex items-center space-x-1 font-mono"
-          title={valObj.rationale || ''}
+          title={title}
         >
           <XCircle className="w-2.5 h-2.5 mr-0.5 text-rose-400" />
           <span>{name}: No</span>
         </span>
       );
     }
-    if (val === 'skipped') {
+    if (state === 'error') {
+      return (
+        <span
+          className="text-[10px] bg-orange-500/15 text-orange-300 border border-orange-500/40 px-2 py-0.5 rounded font-medium flex items-center space-x-1 font-mono"
+          title={title}
+        >
+          <AlertOctagon className="w-2.5 h-2.5 mr-0.5 text-orange-400" />
+          <span>{name}: Error</span>
+        </span>
+      );
+    }
+    if (state === 'cancelled') {
+      return (
+        <span
+          className="text-[10px] bg-violet-500/15 text-violet-300 border border-violet-500/35 px-2 py-0.5 rounded font-medium flex items-center space-x-1 font-mono"
+          title={title}
+        >
+          <Ban className="w-2.5 h-2.5 mr-0.5 text-violet-400" />
+          <span>{name}: Cancelled</span>
+        </span>
+      );
+    }
+    if (state === 'skipped') {
       return (
         <span
           className="text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-medium flex items-center space-x-1 font-mono"
-          title={valObj.rationale || ''}
+          title={title}
         >
           <AlertTriangle className="w-2.5 h-2.5 mr-0.5 text-amber-400" />
           <span>{name}: Skipped</span>
         </span>
       );
     }
+
+    const isPending = evalStatus === 'pending' || evalStatus === 'running';
     return (
       <span
-        className="text-[10px] bg-slate-800 text-slate-300 border border-slate-700 px-2 py-0.5 rounded font-mono"
-        title={valObj.rationale || ''}
+        className="text-[10px] bg-slate-900/90 text-sky-300/80 border border-dashed border-sky-500/30 px-2 py-0.5 rounded font-medium flex items-center space-x-1 font-mono"
+        title={isPending ? 'Evaluation still in progress' : title}
       >
-        {name}: {valObj.value}
+        {isPending ? (
+          <Clock className="w-2.5 h-2.5 mr-0.5 text-sky-400" />
+        ) : (
+          <HelpCircle className="w-2.5 h-2.5 mr-0.5 text-slate-400" />
+        )}
+        <span>{name}: {isPending ? 'Pending' : 'Incomplete'}</span>
       </span>
     );
   };
@@ -207,7 +285,7 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
               {passRate !== null ? `${passRate}%` : '—'}
             </div>
             <span className="text-[11px] text-slate-500 font-mono">
-              {totalPass} of {totalAssessments} checks
+              {totalPass} of {totalEvaluated} evaluated
             </span>
           </div>
 
@@ -215,8 +293,10 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
             <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
               Failed Assessments
             </span>
-            <div className="text-lg font-bold text-rose-400 font-mono">{totalFail}</div>
-            <span className="text-[11px] text-slate-500 font-mono">Requires investigation</span>
+            <div className="text-lg font-bold text-rose-400 font-mono">{totalFailed}</div>
+            <span className="text-[11px] text-slate-500 font-mono">
+              {totalFail} fail · {totalError} err · {totalCancelled} cancel · {totalSkipped} skip · {totalIncomplete} inc
+            </span>
           </div>
 
           <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
@@ -245,19 +325,28 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
           </div>
 
           {/* Filter Status Pills */}
-          <div className="flex items-center space-x-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Filter className="w-3.5 h-3.5 text-slate-500 mr-1" />
-            {(['all', 'pass', 'fail', 'skipped'] as const).map((mode) => (
+            {(
+              [
+                { id: 'all', label: 'all' },
+                { id: 'pass', label: 'pass' },
+                { id: 'fail', label: 'failed' },
+                { id: 'cancelled', label: 'cancelled' },
+                { id: 'skipped', label: 'skipped' },
+                { id: 'incomplete', label: 'incomplete' },
+              ] as const
+            ).map(({ id, label }) => (
               <button
-                key={mode}
-                onClick={() => setStatusFilter(mode)}
+                key={id}
+                onClick={() => setStatusFilter(id)}
                 className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition uppercase font-mono ${
-                  statusFilter === mode
+                  statusFilter === id
                     ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                {mode}
+                {label}
               </button>
             ))}
           </div>
@@ -318,15 +407,48 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
                     className="p-3.5 flex flex-wrap items-center justify-between gap-3 cursor-pointer select-none"
                   >
                     <div className="flex-1 min-w-[240px]">
-                      <div className="flex items-center space-x-2 text-[11px] text-slate-400 mb-1 font-mono">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-400 mb-1 font-mono">
                         <span className="text-sky-400 font-semibold">{trace.request_id}</span>
                         <span>·</span>
                         <span>{formattedDate}</span>
                         <span>·</span>
                         <span className="flex items-center text-slate-300">
                           <Clock className="w-3 h-3 mr-1 text-slate-500" />
-                          {trace.execution_time_ms} ms
+                          Total: {trace.execution_time_ms} ms
                         </span>
+                        {trace.model && (
+                          <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-sky-300 text-[10px]">
+                            {trace.model}
+                          </span>
+                        )}
+                        {trace.prompt_id && (
+                          <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-indigo-300 text-[10px]">
+                            {trace.prompt_id}
+                            {trace.prompt_version ? ` v${trace.prompt_version}` : ''}
+                          </span>
+                        )}
+                        {trace.evaluation_status && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] border uppercase ${
+                              trace.evaluation_status === 'completed'
+                                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                : trace.evaluation_status === 'cancelled'
+                                ? 'bg-violet-500/10 text-violet-300 border-violet-500/35'
+                                : trace.evaluation_status === 'skipped'
+                                ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                                : trace.evaluation_status === 'failed'
+                                ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                                : trace.evaluation_status === 'running' || trace.evaluation_status === 'pending'
+                                ? 'bg-sky-500/10 text-sky-300 border-sky-500/30'
+                                : 'bg-slate-900 text-slate-400 border-slate-700'
+                            }`}
+                          >
+                            Eval: {trace.evaluation_status}
+                            {trace.evaluation_duration_ms && trace.evaluation_duration_ms > 0
+                              ? ` (${(trace.evaluation_duration_ms / 1000).toFixed(1)}s)`
+                              : ''}
+                          </span>
+                        )}
                       </div>
 
                       <h4 className="text-xs font-medium text-slate-100 line-clamp-1">
@@ -336,9 +458,9 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
 
                     {/* Assessment Badges Strip */}
                     <div className="flex flex-wrap items-center gap-1.5">
-                      {getVerdictBadge('Relevancy', trace.assessments['AnswerRelevancy'])}
-                      {getVerdictBadge('Hallucination', trace.assessments['Hallucination'])}
-                      {getVerdictBadge('Safety', trace.assessments['Safety'])}
+                      {getVerdictBadge('Relevancy', trace.assessments['AnswerRelevancy'], trace.evaluation_status)}
+                      {getVerdictBadge('Hallucination', trace.assessments['Hallucination'], trace.evaluation_status)}
+                      {getVerdictBadge('Safety', trace.assessments['Safety'], trace.evaluation_status)}
 
                       <div className="text-slate-500 ml-1">
                         {isExpanded ? (
@@ -353,6 +475,53 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
                   {/* Expanded Details Pane */}
                   {isExpanded && (
                     <div className="px-5 pb-5 pt-3 border-t border-slate-800/80 bg-slate-900/40 text-xs space-y-4">
+                      {/* Detailed Stage Telemetry & RAG Metadata */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2 text-[10px] font-mono">
+                        <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2">
+                          <span className="text-slate-500 block">Retrieval</span>
+                          <span className="text-sky-300 font-semibold">
+                            {trace.retrieval_latency_ms !== null && trace.retrieval_latency_ms !== undefined
+                              ? `${trace.retrieval_latency_ms} ms`
+                              : '—'}
+                          </span>
+                        </div>
+                        <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2">
+                          <span className="text-slate-500 block">Generation</span>
+                          <span className="text-indigo-300 font-semibold">
+                            {trace.generation_latency_ms !== null && trace.generation_latency_ms !== undefined
+                              ? `${trace.generation_latency_ms} ms`
+                              : '—'}
+                          </span>
+                        </div>
+                        <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2">
+                          <span className="text-slate-500 block">Throughput</span>
+                          <span className="text-emerald-300 font-semibold">
+                            {trace.tokens_per_second ? `${trace.tokens_per_second} tok/s` : '—'}
+                          </span>
+                        </div>
+                        <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2">
+                          <span className="text-slate-500 block">Chunks / MMR</span>
+                          <span className="text-slate-200 font-semibold">
+                            {trace.unique_chunks_returned ?? '—'}/{trace.candidates_fetched ?? '—'}{' '}
+                            {trace.use_mmr === true ? '· MMR' : trace.use_mmr === false ? '· Sim' : ''}
+                          </span>
+                        </div>
+                        <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2">
+                          <span className="text-slate-500 block">Scope</span>
+                          <span className="text-slate-300 font-semibold truncate block">
+                            {trace.document_scope || '—'}
+                          </span>
+                        </div>
+                        <div className="bg-slate-950/90 border border-slate-800 rounded-lg p-2">
+                          <span className="text-slate-500 block">Judge Job ({trace.evaluation_status || 'pending'})</span>
+                          <span className="text-amber-300 font-semibold">
+                            {trace.evaluation_duration_ms && trace.evaluation_duration_ms > 0
+                              ? `${(trace.evaluation_duration_ms / 1000).toFixed(2)} s`
+                              : '—'}
+                          </span>
+                        </div>
+                      </div>
+
                       {/* Q&A Full View */}
                       <div className="space-y-1.5">
                         <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block font-mono">
@@ -374,13 +543,44 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
                           </span>
                         </div>
 
-                        {Object.keys(trace.assessments).length === 0 ? (
-                          <p className="text-[11px] text-slate-500 italic bg-slate-950/50 p-3 rounded-lg border border-slate-800/60">
-                            No assessment rationales recorded for this trace yet.
-                          </p>
-                        ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                            {Object.entries(trace.assessments).map(([name, item]) => (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          {Array.from(
+                            new Set<string>([
+                              ...EXPECTED_METRICS,
+                              ...Object.keys(trace.assessments || {}),
+                            ])
+                          ).map((name) => {
+                            const item = trace.assessments?.[name];
+                            const state = classifyAssessment(item?.value);
+                            const displayLabel =
+                              state === 'pass'
+                                ? 'Yes'
+                                : state === 'fail'
+                                ? 'No'
+                                : state === 'error'
+                                ? 'Error'
+                                : state === 'cancelled'
+                                ? 'Cancelled'
+                                : state === 'skipped'
+                                ? 'Skipped'
+                                : trace.evaluation_status === 'running' ||
+                                  trace.evaluation_status === 'pending'
+                                ? 'Pending'
+                                : 'Incomplete';
+                            const badgeStyle =
+                              state === 'pass'
+                                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                : state === 'fail'
+                                ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                                : state === 'error'
+                                ? 'bg-orange-500/15 text-orange-300 border border-orange-500/40'
+                                : state === 'cancelled'
+                                ? 'bg-violet-500/15 text-violet-300 border border-violet-500/35'
+                                : state === 'skipped'
+                                ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                                : 'bg-slate-900 text-sky-300/80 border border-dashed border-sky-500/30';
+
+                            return (
                               <div
                                 key={name}
                                 className="bg-slate-950/90 border border-slate-800 rounded-lg p-3.5 text-[11px] space-y-1.5"
@@ -388,24 +588,21 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({ apiKey }) => {
                                 <div className="flex items-center justify-between border-b border-slate-800/80 pb-1.5">
                                   <span className="font-semibold text-slate-200 font-mono">{name}</span>
                                   <span
-                                    className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-bold uppercase ${
-                                      item.value.toLowerCase() === 'yes'
-                                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                                        : item.value.toLowerCase() === 'no'
-                                        ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
-                                        : 'bg-slate-800 text-slate-400 border border-slate-700'
-                                    }`}
+                                    className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-bold uppercase ${badgeStyle}`}
                                   >
-                                    {item.value}
+                                    {displayLabel}
                                   </span>
                                 </div>
                                 <p className="text-slate-400 leading-relaxed max-h-40 overflow-y-auto pt-1 font-sans">
-                                  {item.rationale || 'No explanation rationale provided by judge.'}
+                                  {item?.rationale ||
+                                    (state === 'incomplete'
+                                      ? 'No assessment verdict recorded for this metric on this trace.'
+                                      : 'No explanation rationale provided by judge.')}
                                 </p>
                               </div>
-                            ))}
-                          </div>
-                        )}
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   )}

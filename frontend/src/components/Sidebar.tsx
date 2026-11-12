@@ -13,6 +13,8 @@ import {
   ScrollText,
   FlaskConical,
   Gauge,
+  GitBranch,
+  Radar,
   X,
 } from 'lucide-react';
 import { ActiveTab, HealthResponse } from '../types';
@@ -70,6 +72,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: <Swords className="w-4 h-4" />,
     },
     {
+      id: 'explorer',
+      label: 'RAG Pipeline Explorer',
+      icon: <GitBranch className="w-4 h-4" />,
+    },
+    {
       id: 'eval',
       label: 'Evaluation & Traces',
       icon: <ScrollText className="w-4 h-4" />,
@@ -78,6 +85,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'benchmarks',
       label: 'Benchmark Lab',
       icon: <FlaskConical className="w-4 h-4" />,
+    },
+    {
+      id: 'observability',
+      label: 'Observability',
+      icon: <Radar className="w-4 h-4" />,
     },
   ];
 

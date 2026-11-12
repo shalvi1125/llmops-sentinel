@@ -1,0 +1,81 @@
+groups:
+  - name: llmops_sentinel_operational_alerts
+    interval: 15s
+    rules:
+      - alert: FastApiBackendDown
+        expr: up{job="llmops-sentinel-api"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "LLMOps Sentinel FastAPI backend is unreachable"
+          description: "Prometheus cannot scrape host.docker.internal:8000/metrics for 30s."
+
+      - alert: FastApiHigh5xxErrorRate
+        expr: |
+          sum(rate(llmops_sentinel_http_errors_total{status_class="5xx"}[5m]))
+          / clamp_min(sum(rate(llmops_sentinel_http_requests_total[5m])), 0.001) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "High 5xx HTTP error rate on LLMOps Sentinel API"
+          description: "Server 5xx error ratio exceeded 5% over the last 5 minutes."
+
+      - alert: RagQueryHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(llmops_sentinel_http_request_duration_seconds_bucket{route="/query"}[5m]))
+          ) > 20
+        for: 2m
+        labels:
+          severity: warning
+          component: rag-pipeline
+        annotations:
+          summary: "RAG /query P95 latency exceeded 20 seconds"
+          description: "Interactive CPU inference queries are exceeding 20s P95 (Phase 3 healthy baseline ~6-8s)."
+
+      - alert: OllamaDependencyUnavailable
+        expr: llmops_sentinel_service_up{service="ollama"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: ollama
+        annotations:
+          summary: "Local Ollama inference daemon unavailable"
+          description: "LLMOps Sentinel reported Ollama health down for 30s."
+
+      - alert: ChromaDbDependencyUnavailable
+        expr: llmops_sentinel_service_up{service="chromadb"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: chromadb
+        annotations:
+          summary: "ChromaDB vector database unavailable"
+          description: "LLMOps Sentinel reported ChromaDB vector collection unreachable for 30s."
+
+      - alert: JudgeEvaluationFailureRateHigh
+        expr: |
+          sum(rate(llmops_sentinel_eval_jobs_total{state="failed"}[15m]))
+          / clamp_min(sum(rate(llmops_sentinel_eval_jobs_total{state=~"completed|failed"}[15m])), 0.001) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+          component: judge-eval
+        annotations:
+          summary: "Background LLM-as-a-Judge failure rate exceeded 25%"
+          description: "Check Mistral judge connectivity, JSON parsing, or timeout thresholds in evaluate.py."
+
+      - alert: JudgeEvaluationPreemptionSpike
+        expr: sum(increase(llmops_sentinel_eval_preemptions_total[10m])) > 5
+        for: 1m
+        labels:
+          severity: info
+          component: judge-eval
+        annotations:
+          summary: "Frequent background judge preemptions detected"
+          description: "More than 5 background judge evaluations were preempted within 10 minutes due to interactive traffic."

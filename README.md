@@ -163,11 +163,11 @@ mlflow server --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./
 
 **2. FastAPI Backend:**
 ```bash
-# Windows:
-.venv\Scripts\python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload
+# Windows (bind 0.0.0.0 when scraping /metrics from Docker Prometheus via host.docker.internal:8000):
+.venv\Scripts\python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
-# Linux / macOS:
-uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload
+# Local loopback only (when not using Docker monitoring containers):
+.venv\Scripts\python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 **3. Frontend Dev Server:**

@@ -1,0 +1,99 @@
+{
+  "uid": "sentinel-eval-judge",
+  "title": "LLMOps Sentinel — 04 Evaluation & Judge Monitoring",
+  "tags": ["llmops-sentinel", "evaluation", "mlflow"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active Judge Eval Job",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "llmops_sentinel_eval_jobs_active" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Judge Preemptions Total",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (trigger) (llmops_sentinel_eval_preemptions_total)",
+          "legendFormat": "{{trigger}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Benchmark Runs by Status",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llmops_sentinel_benchmark_runs_total",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Latest Benchmark Pass Rates (%)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llmops_sentinel_benchmark_pass_rate_percent",
+          "legendFormat": "{{metric}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1 } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Evaluation Job Lifecycle Totals by State",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llmops_sentinel_eval_jobs_total",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Judge Run & Per-Scorer Duration (P95 seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(llmops_sentinel_eval_duration_seconds_bucket[15m])))",
+          "legendFormat": "Job {{outcome}} P95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, metric) (rate(llmops_sentinel_eval_scorer_duration_seconds_bucket[15m])))",
+          "legendFormat": "Scorer {{metric}} P95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    }
+  ]
+}

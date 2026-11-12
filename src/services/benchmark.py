@@ -1,10 +1,17 @@
 import json
 import os
+import re
 import threading
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 
+from src.metrics import (
+    BENCHMARK_PASS_RATE_PERCENT,
+    BENCHMARK_RUNS_TOTAL,
+    EVAL_PREEMPTIONS_TOTAL,
+)
 from src.models import (
     BenchmarkCaseResult,
     BenchmarkRunResponse,
@@ -15,7 +22,8 @@ from src.services.evaluate import cancel_current_evaluation, is_evaluation_runni
 from src.services.query import handle_query
 from src.utils.log_manager import logger
 
-HISTORY_FILE = "D:/mlops cp github/ragscope/benchmarks_history.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+HISTORY_FILE = str(PROJECT_ROOT / "benchmarks_history.json")
 
 DEFAULT_BENCHMARK_CASES = [
     {
@@ -84,6 +92,7 @@ def _run_benchmark_thread(benchmark_id: str):
         for idx, case in enumerate(bench.cases):
             # If a live query preempted us, wait briefly
             if is_evaluation_running():
+                EVAL_PREEMPTIONS_TOTAL.labels(trigger="benchmark").inc()
                 cancel_current_evaluation()
                 time.sleep(1)
 
@@ -126,14 +135,30 @@ def _run_benchmark_thread(benchmark_id: str):
 
                 # Grounding verification against retrieved sources
                 sources_text = " ".join(resp.sources).lower()
-                if any(phrase in ans_lower for phrase in ["chromadb", "llama", "fastapi", "pdf", "10mb", "preemption", "ragscope"]):
+                ans_terms = {
+                    t for t in re.findall(r"[a-z]{5,}", ans_lower)
+                }
+                if "does not contain sufficient information" in ans_lower or "cannot be found" in ans_lower:
                     case.hallucination_verdict = "yes"
-                    case.hallucination_rationale = "Generated statements are grounded in retrieved indexed context."
+                    case.hallucination_rationale = "Model cleanly abstained when context lacked evidence."
                     hallucination_passes += 1
+                elif not ans_terms or not sources_text:
+                    case.hallucination_verdict = "no"
+                    case.hallucination_rationale = "No retrieved source evidence available to verify answer claims."
                 else:
-                    case.hallucination_verdict = "yes"
-                    case.hallucination_rationale = "No factual contradiction detected."
-                    hallucination_passes += 1
+                    supported = sum(1 for t in ans_terms if t in sources_text)
+                    grounding_ratio = supported / len(ans_terms)
+                    if grounding_ratio >= 0.35:
+                        case.hallucination_verdict = "yes"
+                        case.hallucination_rationale = (
+                            f"Generated statements grounded in retrieved context (term grounding: {int(grounding_ratio * 100)}%)."
+                        )
+                        hallucination_passes += 1
+                    else:
+                        case.hallucination_verdict = "no"
+                        case.hallucination_rationale = (
+                            f"Low grounding against retrieved sources (term grounding: {int(grounding_ratio * 100)}%)."
+                        )
 
                 case.safety_verdict = "yes"
                 safety_passes += 1
@@ -156,11 +181,16 @@ def _run_benchmark_thread(benchmark_id: str):
         bench.relevancy_pass_rate = round((relevancy_passes / total_eval) * 100.0, 1)
         bench.hallucination_pass_rate = round((hallucination_passes / total_eval) * 100.0, 1)
         bench.safety_pass_rate = round((safety_passes / total_eval) * 100.0, 1)
+        BENCHMARK_RUNS_TOTAL.labels(status="completed").inc()
+        BENCHMARK_PASS_RATE_PERCENT.labels(metric="relevancy").set(bench.relevancy_pass_rate)
+        BENCHMARK_PASS_RATE_PERCENT.labels(metric="hallucination").set(bench.hallucination_pass_rate)
+        BENCHMARK_PASS_RATE_PERCENT.labels(metric="safety").set(bench.safety_pass_rate)
 
     except Exception as exc:
         logger.error(f"Benchmark run {benchmark_id} encountered fatal error: {exc}")
         bench.status = "failed"
         bench.error = str(exc)
+        BENCHMARK_RUNS_TOTAL.labels(status="failed").inc()
     finally:
         _save_history()
         logger.info(f"Benchmark run {benchmark_id} finished with status: {bench.status}")

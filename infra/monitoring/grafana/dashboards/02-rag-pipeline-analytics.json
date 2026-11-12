@@ -1,0 +1,133 @@
+{
+  "uid": "sentinel-rag-pipeline",
+  "title": "LLMOps Sentinel — 02 RAG Pipeline Analytics",
+  "tags": ["llmops-sentinel", "rag"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total Document Ingestions",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(llmops_sentinel_ingestions_total{status=\"success\"})" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Cumulative Chunks Created",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(llmops_sentinel_ingestion_chunks_created_total)" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Duplicate Chunks Filtered",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "llmops_sentinel_retrieval_duplicates_removed_total" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Embedding Cache Hit Ratio (%)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (sum(llmops_sentinel_query_embedding_duration_seconds_count{cache_hit=\"true\"}) or vector(0)) / clamp_min(sum(llmops_sentinel_query_embedding_duration_seconds_count), 1)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1 } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Retrieval Stage Latencies (P95 seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llmops_sentinel_query_embedding_duration_seconds_bucket[5m])))",
+          "legendFormat": "Query Embedding P95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llmops_sentinel_chroma_search_duration_seconds_bucket[5m])))",
+          "legendFormat": "ChromaDB Search P95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llmops_sentinel_mmr_rerank_duration_seconds_bucket[5m])))",
+          "legendFormat": "Dedup + MMR P95"
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llmops_sentinel_retrieval_duration_seconds_bucket[5m])))",
+          "legendFormat": "Total Retrieval P95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Candidates Oversampled vs Unique Chunks Retained",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(llmops_sentinel_retrieval_candidates_fetched_sum[5m]) / clamp_min(rate(llmops_sentinel_retrieval_candidates_fetched_count[5m]), 0.001)",
+          "legendFormat": "Avg Candidates Fetched"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(llmops_sentinel_retrieval_unique_chunks_sum[5m]) / clamp_min(rate(llmops_sentinel_retrieval_unique_chunks_count[5m]), 0.001)",
+          "legendFormat": "Avg Unique Chunks Returned"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Average Constructed Context Length (chars)",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(llmops_sentinel_context_char_count_sum[5m]) / clamp_min(rate(llmops_sentinel_context_char_count_count[5m]), 0.001)",
+          "legendFormat": "Mean Context Chars"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Ingestions by File Type & Status",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "llmops_sentinel_ingestions_total",
+          "legendFormat": "{{file_type}} ({{status}})"
+        }
+      ]
+    }
+  ]
+}

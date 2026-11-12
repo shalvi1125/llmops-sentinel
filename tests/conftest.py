@@ -1,6 +1,7 @@
 import os
 
 os.environ["API_KEY"] = "test-api-key"
+os.environ["MLFLOW_TRACKING_URI"] = "http://127.0.0.1:59999"
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch

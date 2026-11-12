@@ -19,9 +19,15 @@ import { SourceCitation } from './SourceCitation';
 
 interface ChatInterfaceProps {
   apiKey: string;
+  selectedDocument?: string | null;
+  onClearSelectedDocument?: () => void;
 }
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ apiKey }) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({
+  apiKey,
+  selectedDocument = null,
+  onClearSelectedDocument,
+}) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -69,7 +75,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ apiKey }) => {
     }, 10000);
 
     try {
-      const response = await queryRAG(textToSend, topK, apiKey, promptId);
+      const response = await queryRAG(
+        textToSend,
+        topK,
+        apiKey,
+        promptId,
+        undefined,
+        selectedDocument
+      );
       clearTimeout(evalTimer);
 
       const assistantMessage: ChatMessage = {
@@ -83,6 +96,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ apiKey }) => {
         prompt_version: response.prompt_version,
         model: response.model,
         generation_latency_ms: response.generation_latency_ms,
+        total_latency_ms: response.total_latency_ms,
+        tokens_per_second: response.tokens_per_second,
+        evaluation_status: response.evaluation_status,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
@@ -115,19 +131,41 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ apiKey }) => {
   };
 
   const sampleQuestions = [
-    'What is LLMOps Sentinel and what database does it use?',
-    'Which local models are used for generation, judge evaluation, and embeddings?',
-    'How does zero-latency preemption prevent query timeouts during long judge evaluations?',
+    'What is this document about and what problem does it solve?',
+    'Summarize the system architecture and core components described in the document.',
+    'What are the key methodologies, results, or future scope mentioned?',
   ];
 
   return (
     <div className="bg-slate-900/60 border border-slate-800 rounded-xl flex flex-col h-full overflow-hidden">
       {/* Top Bar / Inspector Controls */}
-      <div className="px-5 py-3 border-b border-slate-800 bg-slate-950/40 flex items-center justify-between text-xs">
-        <div className="flex items-center space-x-2">
-          <Bot className="w-4 h-4 text-sky-400" />
-          <span className="font-semibold text-slate-200">Live Chat & Inspector</span>
-          <span className="text-slate-400 hidden sm:inline">· Primary Model: Llama 3.2 (3B)</span>
+      <div className="px-5 py-3 border-b border-slate-800 bg-slate-950/40 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="flex items-center space-x-2 min-w-0">
+          <Bot className="w-4 h-4 text-sky-400 shrink-0" />
+          <span className="font-semibold text-slate-200 shrink-0">Live Chat & Inspector</span>
+          <span
+            className={`text-[10px] font-mono px-2 py-0.5 rounded border truncate max-w-[200px] ${
+              selectedDocument
+                ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                : 'bg-slate-800/80 text-slate-400 border-slate-700'
+            }`}
+            title={
+              selectedDocument
+                ? `Queries strictly isolated to: ${selectedDocument}`
+                : 'Searching across all indexed documents in ChromaDB'
+            }
+          >
+            Scope: {selectedDocument || 'All Docs'}
+          </span>
+          {selectedDocument && onClearSelectedDocument && (
+            <button
+              onClick={onClearSelectedDocument}
+              className="text-[10px] text-slate-400 hover:text-slate-200 underline font-mono shrink-0"
+              title="Query across all indexed documents"
+            >
+              All
+            </button>
+          )}
         </div>
 
         <div className="flex items-center space-x-2 sm:space-x-3">
@@ -297,13 +335,26 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ apiKey }) => {
                       {msg.generation_latency_ms && (
                         <span className="flex items-center space-x-1 bg-slate-900 border border-slate-800 px-1.5 py-0.5 rounded text-slate-300">
                           <Clock className="w-3 h-3 text-slate-400" />
-                          <span>Gen: {msg.generation_latency_ms} ms</span>
+                          <span>
+                            Gen: {msg.generation_latency_ms} ms
+                            {msg.total_latency_ms ? ` · Total: ${msg.total_latency_ms} ms` : ''}
+                          </span>
+                        </span>
+                      )}
+
+                      {msg.tokens_per_second && (
+                        <span className="bg-slate-900 border border-slate-800 px-1.5 py-0.5 rounded text-emerald-300">
+                          {msg.tokens_per_second} tok/s
                         </span>
                       )}
 
                       <span className="text-emerald-400 font-medium flex items-center space-x-1">
                         <ShieldCheck className="w-3 h-3" />
-                        <span>MLflow Trace Synced</span>
+                        <span>
+                          {msg.evaluation_status
+                            ? `MLflow Trace (${msg.evaluation_status})`
+                            : 'MLflow Trace Synced'}
+                        </span>
                       </span>
                     </div>
 

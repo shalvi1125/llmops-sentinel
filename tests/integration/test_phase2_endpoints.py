@@ -1,8 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from src.models import CompareResponse, QueryResponse
-
 
 @pytest.mark.integration
 def test_get_prompts_requires_auth(client):
@@ -73,7 +71,7 @@ def test_query_compare_success_returns_both_models(client, auth_headers):
     mock_llm_mistral.content = "Mistral answer: RAG augments LLMs with knowledge."
 
     with patch("src.services.compare._get_vectorstore", return_value=mock_vs), \
-         patch("src.services.compare.get_llm") as mock_get_llm, \
+         patch("src.services.compare.get_llm"), \
          patch("src.services.compare.PromptTemplate"), \
          patch("src.services.compare.RunnableSequence") as mock_seq:
 
@@ -98,23 +96,26 @@ def test_query_compare_success_returns_both_models(client, auth_headers):
 
 
 @pytest.mark.integration
-def test_eval_benchmark_endpoints(client, auth_headers):
-    # Test list
-    list_resp = client.get("/eval/benchmarks", headers=auth_headers)
-    assert list_resp.status_code == 200
-    assert isinstance(list_resp.json(), list)
+def test_eval_benchmark_endpoints(client, auth_headers, tmp_path):
+    temp_history = str(tmp_path / "bench_history.json")
+    with patch("src.services.benchmark.HISTORY_FILE", temp_history), \
+         patch("src.services.benchmark._run_benchmark_thread"):
+        # Test list
+        list_resp = client.get("/eval/benchmarks", headers=auth_headers)
+        assert list_resp.status_code == 200
+        assert isinstance(list_resp.json(), list)
 
-    # Test trigger
-    trigger_resp = client.post("/eval/benchmark", headers=auth_headers)
-    assert trigger_resp.status_code == 200
-    data = trigger_resp.json()
-    assert "benchmark_id" in data
-    bench_id = data["benchmark_id"]
-    assert data["status"] in ["running", "completed"]
+        # Test trigger
+        trigger_resp = client.post("/eval/benchmark", headers=auth_headers)
+        assert trigger_resp.status_code == 200
+        data = trigger_resp.json()
+        assert "benchmark_id" in data
+        bench_id = data["benchmark_id"]
+        assert data["status"] in ["running", "completed"]
 
-    # Test get by ID
-    get_resp = client.get(f"/eval/benchmark/{bench_id}", headers=auth_headers)
-    assert get_resp.status_code == 200
-    get_data = get_resp.json()
-    assert get_data["benchmark_id"] == bench_id
-    assert "cases" in get_data
+        # Test get by ID
+        get_resp = client.get(f"/eval/benchmark/{bench_id}", headers=auth_headers)
+        assert get_resp.status_code == 200
+        get_data = get_resp.json()
+        assert get_data["benchmark_id"] == bench_id
+        assert "cases" in get_data

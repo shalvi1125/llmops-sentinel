@@ -130,7 +130,7 @@ export const SourceCitation: React.FC<SourceCitationProps> = ({
             <span className="text-[10px] text-sky-400 font-mono">Chroma HNSW</span>
           </div>
           <p>
-            Chroma computes cosine distance $d = 1 - \cos(\theta)$ where <strong>0.0</strong>{' '}
+            Chroma computes cosine distance d = 1 - cos(θ) where <strong>0.0</strong>{' '}
             represents identical embeddings and higher values represent greater semantic distance.
           </p>
           <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-[10px]">
@@ -149,6 +149,13 @@ export const SourceCitation: React.FC<SourceCitationProps> = ({
             Top cosine distance is {retrieval_diagnostics.top_score} (&gt; 0.75). The retrieved
             passages may have weak semantic alignment with your query.
           </span>
+        </div>
+      )}
+
+      {/* Deduplication / unique K explanation notice */}
+      {isOpen && retrieval_diagnostics?.insufficient_unique_reason && (
+        <div className="mt-2 p-2 bg-slate-900/80 border border-slate-700/80 rounded-lg text-[11px] text-amber-200 font-mono">
+          {retrieval_diagnostics.insufficient_unique_reason}
         </div>
       )}
 

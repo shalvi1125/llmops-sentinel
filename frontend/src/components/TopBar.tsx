@@ -24,6 +24,11 @@ export const TopBar: React.FC<TopBarProps> = ({ activeTab, onMobileMenuToggle })
       subtitle: 'Sequential side-by-side inference benchmark: Llama 3.2 (3B) vs Mistral (7B)',
       tag: 'Dual Inference',
     },
+    explorer: {
+      title: 'RAG Pipeline Explorer',
+      subtitle: 'Visual document chunking, overlap inspection, embeddings, and deduplicated Top-K / MMR retrieval',
+      tag: 'Pipeline Explorer',
+    },
     eval: {
       title: 'Evaluation & Traces',
       subtitle: 'Real-time MLflow trace audit log with Mistral judge rationale breakdowns',
@@ -33,6 +38,11 @@ export const TopBar: React.FC<TopBarProps> = ({ activeTab, onMobileMenuToggle })
       title: 'Benchmark Lab',
       subtitle: 'Curated golden test dataset regression suite with automated pass metrics',
       tag: 'Regression Lab',
+    },
+    observability: {
+      title: 'Observability Hub',
+      subtitle: 'Prometheus metrics scraping, Grafana dashboards, and MLflow trace/judge integration',
+      tag: 'Prom · Grafana · MLflow',
     },
   };
 

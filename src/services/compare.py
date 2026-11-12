@@ -1,162 +1,131 @@
-import os
+import asyncio
 import time
 from fastapi import HTTPException
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableSequence
 
+from src.metrics import (
+    CONTEXT_CHAR_COUNT,
+    EVAL_PREEMPTIONS_TOTAL,
+    LLM_ACTIVE_REQUESTS,
+    LLM_GENERATION_DURATION_SECONDS,
+    LLM_LAST_TOKENS_PER_SECOND,
+    LLM_REQUESTS_TOTAL,
+    LLM_TOKENS_GENERATED_TOTAL,
+    LLM_TOKENS_PER_SECOND,
+)
 from src.models import (
     CompareRequest,
     CompareResponse,
     ModelComparisonItem,
-    RetrievalDiagnostics,
-    SourceChunk,
 )
 from src.prompts.catalog import get_prompt_strategy
 from src.services.evaluate import (
     cancel_current_evaluation,
     is_evaluation_running,
 )
-from src.services.query import _get_vectorstore, get_llm
-from src.utils.env import MAX_CONTEXT_CHARS, MAX_TOP_K
+from src.services.query import (
+    _detect_token_source,
+    _extract_token_metrics,
+    _get_vectorstore,
+    get_generation_settings,
+    get_llm,
+    retrieve_context_chunks,
+)
+from src.utils.context import format_context_for_llm
+from src.utils.env import MAX_CONTEXT_CHARS
 from src.utils.log_manager import logger
 
 COMPARE_MODELS = ["llama3.2", "mistral"]
 
 
 async def handle_compare(request: CompareRequest) -> CompareResponse:
-    """Execute model comparison across llama3.2 and mistral sequentially on identical retrieved context."""
+    """Execute sequential model comparison off the asyncio event loop on shared compacted context."""
     try:
         if is_evaluation_running():
             logger.info("Preempting ongoing judge evaluation for incoming model comparison...")
+            EVAL_PREEMPTIONS_TOTAL.labels(trigger="compare").inc()
             cancel_current_evaluation()
 
         vectorstore = _get_vectorstore()
-
-        try:
-            collection_count = vectorstore._collection.count()
-        except Exception:
-            collection_count = 0
-
-        if collection_count == 0:
-            raise HTTPException(
-                status_code=404,
-                detail="No documents found. Please ingest documents first.",
-            )
-
-        safe_top_k = min(request.top_k, MAX_TOP_K)
-
-        # 1. Retrieval (shared across both models)
-        t_retrieval_start = time.perf_counter()
-        source_docs = []
-        doc_scores: list[float | None] = []
-
-        if hasattr(vectorstore, "similarity_search_with_score"):
-            try:
-                results = vectorstore.similarity_search_with_score(
-                    request.question, k=safe_top_k
-                )
-                if isinstance(results, list) and (
-                    len(results) == 0 or isinstance(results[0], tuple)
-                ):
-                    for doc, score in results:
-                        source_docs.append(doc)
-                        try:
-                            doc_scores.append(float(score))
-                        except (ValueError, TypeError):
-                            doc_scores.append(None)
-            except Exception:
-                pass
-
-        if not source_docs:
-            retriever = vectorstore.as_retriever(search_kwargs={"k": safe_top_k})
-            source_docs = retriever.invoke(request.question)
-            doc_scores = [None] * len(source_docs)
-
-        retrieval_latency_ms = (time.perf_counter() - t_retrieval_start) * 1000.0
-
-        sources = [str(doc.page_content) for doc in source_docs]
-        source_chunks: list[SourceChunk] = []
-
-        for idx, (doc, score) in enumerate(zip(source_docs, doc_scores)):
-            meta = getattr(doc, "metadata", {})
-            clean_doc_name = "Document"
-            page_num: int | None = None
-
-            if isinstance(meta, dict):
-                raw_name = meta.get("filename") or meta.get("source")
-                if raw_name and isinstance(raw_name, str):
-                    clean_doc_name = (
-                        os.path.basename(raw_name)
-                        if ("/" in raw_name or "\\" in raw_name)
-                        else raw_name
-                    )
-                raw_page = meta.get("page")
-                if raw_page is not None:
-                    try:
-                        page_num = int(raw_page) + 1
-                    except (ValueError, TypeError):
-                        page_num = None
-
-            text_content = str(doc.page_content)
-            token_est = max(1, len(text_content) // 4)
-
-            source_chunks.append(
-                SourceChunk(
-                    chunk_id=f"chunk-{idx + 1}",
-                    text=text_content,
-                    score=round(score, 4) if score is not None else None,
-                    document_name=clean_doc_name,
-                    page_number=page_num,
-                    token_count_estimate=token_est,
-                )
-            )
-
-        top_score = doc_scores[0] if doc_scores and doc_scores[0] is not None else None
-        low_confidence = top_score is not None and top_score > 0.75
-        diagnostics = RetrievalDiagnostics(
-            retrieval_latency_ms=round(retrieval_latency_ms, 2),
-            top_score=round(top_score, 4) if top_score is not None else None,
-            low_confidence=low_confidence,
-            score_metric="cosine_distance",
+        sources, source_chunks, diagnostics, scope_label = await asyncio.to_thread(
+            retrieve_context_chunks,
+            vectorstore,
+            request.question,
+            request.top_k,
+            request.document_id,
+            request.document_name,
+            request.use_mmr,
+            request.mmr_lambda,
         )
 
-        context = "\n\n".join(sources)
-        if len(context) > MAX_CONTEXT_CHARS:
-            context = context[:MAX_CONTEXT_CHARS]
+        max_safe_context = min(MAX_CONTEXT_CHARS, 3500)
+        source_labels = [
+            f"{sc.document_name} p.{sc.page_number}" if sc.page_number else (sc.document_name or "")
+            for sc in source_chunks
+        ]
+        context = format_context_for_llm(
+            sources,
+            max_chars=max_safe_context,
+            source_labels=source_labels if source_chunks else None,
+        )
+        CONTEXT_CHAR_COUNT.observe(float(len(context)))
 
         strategy = get_prompt_strategy(request.prompt_id)
         compare_template = (
             strategy.template
-            + "\nBe concise, direct, and factual in 2-3 sentences. Do not add introductory filler."
+            + "\nKeep response concise (2-3 sentences), direct, and strictly grounded."
         )
         prompt = PromptTemplate(
             input_variables=["contexto", "question"], template=compare_template
         )
 
-        # 2. Sequential Model Invocations (strictly non-concurrent to preserve CPU & memory)
+        # Sequential Model Invocations off the event loop (strictly non-concurrent to preserve RAM/CPU)
         model_results: list[ModelComparisonItem] = []
 
         for model_name in COMPARE_MODELS:
             logger.info(f"Running sequential comparison inference on model: {model_name}")
-            from langchain_ollama import ChatOllama
-            from src.utils.env import OLLAMA_BASE_URL
-            llm = ChatOllama(
-                model=model_name,
-                base_url=OLLAMA_BASE_URL,
-                temperature=0,
-                num_predict=120,
-                keep_alive="5m",
-            )
+            llm = get_llm(model_name)
             sequence = RunnableSequence(prompt | llm)
 
             t0 = time.perf_counter()
-            response = sequence.invoke({"contexto": context, "question": request.question})
-            gen_time_sec = max(0.001, time.perf_counter() - t0)
+            LLM_ACTIVE_REQUESTS.labels(model=model_name).inc()
+            try:
+                response = await asyncio.to_thread(
+                    sequence.invoke, {"contexto": context, "question": request.question}
+                )
+                gen_time_sec = max(0.0001, time.perf_counter() - t0)
+            except Exception:
+                gen_time_sec = max(0.0001, time.perf_counter() - t0)
+                LLM_REQUESTS_TOTAL.labels(
+                    model=model_name, endpoint="compare", status="error"
+                ).inc()
+                LLM_GENERATION_DURATION_SECONDS.labels(
+                    model=model_name, endpoint="compare"
+                ).observe(gen_time_sec)
+                raise
+            finally:
+                LLM_ACTIVE_REQUESTS.labels(model=model_name).dec()
+
             gen_latency_ms = gen_time_sec * 1000.0
 
             ans_text = response.content
-            token_count_est = max(1, len(ans_text) // 4)
-            tok_per_sec = round(token_count_est / gen_time_sec, 2)
+            token_count_est, tok_per_sec = _extract_token_metrics(
+                response, ans_text, gen_time_sec
+            )
+            token_source = _detect_token_source(response)
+            LLM_REQUESTS_TOTAL.labels(
+                model=model_name, endpoint="compare", status="success"
+            ).inc()
+            LLM_GENERATION_DURATION_SECONDS.labels(
+                model=model_name, endpoint="compare"
+            ).observe(gen_time_sec)
+            LLM_TOKENS_GENERATED_TOTAL.labels(
+                model=model_name, token_source=token_source
+            ).inc(token_count_est)
+            if tok_per_sec is not None and tok_per_sec > 0:
+                LLM_TOKENS_PER_SECOND.labels(model=model_name).observe(tok_per_sec)
+                LLM_LAST_TOKENS_PER_SECOND.labels(model=model_name).set(tok_per_sec)
 
             model_results.append(
                 ModelComparisonItem(
@@ -168,13 +137,18 @@ async def handle_compare(request: CompareRequest) -> CompareResponse:
                 )
             )
 
+        base_settings = get_generation_settings(COMPARE_MODELS[0])
         return CompareResponse(
             question=request.question,
             sources=sources,
             source_chunks=source_chunks,
             retrieval_diagnostics=diagnostics,
+            document_scope=scope_label,
             prompt_id=strategy.id,
             prompt_version=strategy.version,
+            retrieval_latency_ms=diagnostics.retrieval_latency_ms,
+            context_char_count=len(context),
+            generation_settings=base_settings,
             models=model_results,
         )
 

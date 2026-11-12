@@ -4,12 +4,28 @@ interface LatencyDistributionPlotProps {
   latencies: number[];
   title?: string;
   emptyMessage?: string;
+  percentileMethodLabel?: string;
+}
+
+/**
+ * Type-7 (R-7 / NumPy linear interpolation) percentile helper matching backend `src/services/audit.py`.
+ */
+export function computeLinearPercentile(sorted: number[], pct: number): number {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const clamped = Math.max(0, Math.min(100, pct));
+  const pos = (clamped / 100) * (sorted.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.min(lo + 1, sorted.length - 1);
+  const frac = pos - lo;
+  return sorted[lo] + frac * (sorted[hi] - sorted[lo]);
 }
 
 export const LatencyDistributionPlot: React.FC<LatencyDistributionPlotProps> = ({
   latencies,
   title = 'Latency Percentile Breakdown',
   emptyMessage = 'No execution timings recorded yet',
+  percentileMethodLabel = 'Linear Interpolation (R-7)',
 }) => {
   if (!latencies || latencies.length === 0) {
     return (
@@ -22,12 +38,13 @@ export const LatencyDistributionPlot: React.FC<LatencyDistributionPlotProps> = (
 
   const sorted = [...latencies].sort((a, b) => a - b);
   const count = sorted.length;
+  const p95LowConfidence = count < 20;
 
   const min = Math.round(sorted[0]);
   const max = Math.round(sorted[count - 1]);
-  const p50 = Math.round(sorted[Math.floor(count * 0.5)]);
-  const p90 = Math.round(sorted[Math.floor(count * 0.9)]);
-  const p95 = Math.round(sorted[Math.floor(count * 0.95)]);
+  const p50 = Math.round(computeLinearPercentile(sorted, 50));
+  const p90 = Math.round(computeLinearPercentile(sorted, 90));
+  const p95 = Math.round(computeLinearPercentile(sorted, 95));
   const mean = Math.round(sorted.reduce((acc, v) => acc + v, 0) / count);
 
   // Buckets
@@ -41,9 +58,13 @@ export const LatencyDistributionPlot: React.FC<LatencyDistributionPlotProps> = (
 
   return (
     <div className="w-full bg-slate-950/60 border border-slate-800/90 rounded-xl p-4 flex flex-col space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs font-semibold text-slate-300">{title}</span>
-        <span className="text-[10px] font-mono text-slate-500">n = {count} samples</span>
+        <div className="flex items-center space-x-2 text-[10px] font-mono text-slate-500">
+          <span>n = {count} samples</span>
+          <span>·</span>
+          <span title="Aligned with /eval/performance backend computation">{percentileMethodLabel}</span>
+        </div>
       </div>
 
       {/* Percentiles Metric Strip */}
@@ -64,8 +85,17 @@ export const LatencyDistributionPlot: React.FC<LatencyDistributionPlotProps> = (
           <span className="text-[9px] font-mono text-slate-400 block uppercase">P90</span>
           <span className="text-xs font-bold font-mono text-indigo-400">{p90} ms</span>
         </div>
-        <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">
-          <span className="text-[9px] font-mono text-slate-400 block uppercase">P95</span>
+        <div
+          className="bg-slate-900/80 border border-slate-800 rounded-lg p-2"
+          title={
+            p95LowConfidence
+              ? 'P95 has higher variance when sample count < 20'
+              : 'Linearly interpolated 95th percentile'
+          }
+        >
+          <span className="text-[9px] font-mono text-slate-400 block uppercase">
+            P95 {p95LowConfidence ? '(n<20)' : ''}
+          </span>
           <span className="text-xs font-bold font-mono text-amber-400">{p95} ms</span>
         </div>
         <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">

@@ -18,11 +18,15 @@ interface DocumentUploadProps {
   apiKey: string;
   uploadedDocs: UploadedDoc[];
   onDocumentIngested: (doc: UploadedDoc) => void;
+  selectedDocument?: string | null;
+  onSelectDocument?: (filename: string | null) => void;
 }
 
 export const DocumentUpload: React.FC<DocumentUploadProps> = ({
   apiKey,
   onDocumentIngested,
+  selectedDocument = null,
+  onSelectDocument,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -45,12 +49,22 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
     try {
       const docs = await getIndexedDocuments(apiKey);
       setServerDocs(docs);
+      if (onSelectDocument) {
+        const stillExists = selectedDocument
+          ? docs.some((d) => d.filename === selectedDocument)
+          : false;
+        if (selectedDocument && !stillExists) {
+          onSelectDocument(docs.length === 1 ? docs[0].filename : null);
+        } else if (!selectedDocument && docs.length === 1) {
+          onSelectDocument(docs[0].filename);
+        }
+      }
     } catch {
       // Backend might be warming up
     } finally {
       setLoadingDocs(false);
     }
-  }, [apiKey]);
+  }, [apiKey, selectedDocument, onSelectDocument]);
 
   useEffect(() => {
     refreshDocuments();
@@ -66,10 +80,10 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
       return;
     }
 
-    if (file.size > 15 * 1024 * 1024) {
+    if (file.size > 10 * 1024 * 1024) {
       setUploadStatus({
         type: 'error',
-        message: 'File size exceeds maximum limit of 15 MB.',
+        message: 'File size exceeds maximum limit of 10 MB.',
       });
       return;
     }
@@ -253,7 +267,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
             <span className="text-xs font-medium text-slate-200">
               Click to browse or drop file here
             </span>
-            <span className="text-[11px] text-slate-400 mt-0.5">Supports .pdf and .txt (max 15 MB)</span>
+            <span className="text-[11px] text-slate-400 mt-0.5">Supports .pdf and .txt (max 10 MB)</span>
           </>
         )}
       </div>
@@ -333,45 +347,73 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({
           </div>
         ) : (
           <div className="overflow-y-auto space-y-2 pr-1 flex-1">
-            {serverDocs.map((doc) => (
-              <div
-                key={doc.filename}
-                className="bg-slate-950/70 border border-slate-800/90 rounded-lg p-2.5 text-xs hover:border-slate-700 transition"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2 truncate">
-                    <FileText className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                    <span className="font-medium text-slate-200 truncate" title={doc.filename}>
-                      {doc.filename}
-                    </span>
+            {serverDocs.map((doc) => {
+              const isSelected = selectedDocument === doc.filename;
+              return (
+                <div
+                  key={doc.filename}
+                  onClick={() =>
+                    onSelectDocument?.(isSelected ? null : doc.filename)
+                  }
+                  className={`rounded-lg p-2.5 text-xs transition cursor-pointer border ${
+                    isSelected
+                      ? 'bg-sky-950/40 border-sky-500/60 shadow-sm shadow-sky-500/10'
+                      : 'bg-slate-950/70 border-slate-800/90 hover:border-slate-700'
+                  }`}
+                  title={
+                    isSelected
+                      ? 'Selected query scope (click to query all documents)'
+                      : 'Click to isolate queries to this document'
+                  }
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2 truncate">
+                      <FileText
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          isSelected ? 'text-sky-300' : 'text-sky-400'
+                        }`}
+                      />
+                      <span className="font-medium text-slate-200 truncate" title={doc.filename}>
+                        {doc.filename}
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-1.5 shrink-0 ml-2">
+                      <span className="text-[10px] text-emerald-400 bg-emerald-950/50 border border-emerald-800/40 px-1.5 py-0.5 rounded font-mono">
+                        {doc.chunks} chunk{doc.chunks > 1 ? 's' : ''}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteSingle(doc.filename);
+                        }}
+                        disabled={deletingFilename === doc.filename}
+                        title={`Remove "${doc.filename}" from ChromaDB`}
+                        className="text-slate-400 hover:text-rose-400 transition p-1"
+                      >
+                        {deletingFilename === doc.filename ? (
+                          <Loader2 className="w-3 h-3 animate-spin text-rose-400" />
+                        ) : (
+                          <Trash2 className="w-3 h-3" />
+                        )}
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center space-x-1.5 shrink-0 ml-2">
-                    <span className="text-[10px] text-emerald-400 bg-emerald-950/50 border border-emerald-800/40 px-1.5 py-0.5 rounded font-mono">
-                      {doc.chunks} chunk{doc.chunks > 1 ? 's' : ''}
+                  <div className="text-[10px] text-slate-400 mt-1.5 flex items-center justify-between font-mono">
+                    <span className="text-slate-500 text-[10px]">
+                      {doc.document_id ? `ID: ${doc.document_id}` : 'Indexed in ChromaDB'}
                     </span>
-                    <button
-                      onClick={() => handleDeleteSingle(doc.filename)}
-                      disabled={deletingFilename === doc.filename}
-                      title={`Remove "${doc.filename}" from ChromaDB`}
-                      className="text-slate-400 hover:text-rose-400 transition p-1"
+                    <span
+                      className={`flex items-center ${
+                        isSelected ? 'text-sky-300 font-semibold' : 'text-slate-400'
+                      }`}
                     >
-                      {deletingFilename === doc.filename ? (
-                        <Loader2 className="w-3 h-3 animate-spin text-rose-400" />
-                      ) : (
-                        <Trash2 className="w-3 h-3" />
-                      )}
-                    </button>
+                      <Sparkles className="w-2.5 h-2.5 mr-1" />
+                      {isSelected ? 'Active Scope' : 'Click to Scope'}
+                    </span>
                   </div>
                 </div>
-                <div className="text-[10px] text-slate-400 mt-1.5 flex items-center justify-between font-mono">
-                  <span className="text-slate-500 text-[10px]">Indexed in ChromaDB</span>
-                  <span className="flex items-center text-sky-400">
-                    <Sparkles className="w-2.5 h-2.5 mr-1" />
-                    Active Context
-                  </span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

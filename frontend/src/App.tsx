@@ -5,8 +5,10 @@ import { OverviewView } from './components/OverviewView';
 import { DocumentUpload } from './components/DocumentUpload';
 import { ChatInterface } from './components/ChatInterface';
 import { ModelArena } from './components/ModelArena';
+import { RagExplorerView } from './components/RagExplorerView';
 import { AuditLogView } from './components/AuditLogView';
 import { BenchmarkLabView } from './components/BenchmarkLabView';
+import { ObservabilityView } from './components/ObservabilityView';
 import { checkHealth, getPrompts } from './api';
 import { ActiveTab, HealthResponse, PromptStrategy, UploadedDoc } from './types';
 
@@ -17,6 +19,7 @@ export function App() {
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([]);
+  const [selectedDocument, setSelectedDocument] = useState<string | null>(null);
   const [prompts, setPrompts] = useState<PromptStrategy[]>([]);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
@@ -50,6 +53,7 @@ export function App() {
 
   const handleDocumentIngested = (doc: UploadedDoc) => {
     setUploadedDocs((prev) => [doc, ...prev]);
+    setSelectedDocument(doc.filename);
   };
 
   return (
@@ -94,12 +98,18 @@ export function App() {
                   apiKey={apiKey}
                   uploadedDocs={uploadedDocs}
                   onDocumentIngested={handleDocumentIngested}
+                  selectedDocument={selectedDocument}
+                  onSelectDocument={setSelectedDocument}
                 />
               </div>
 
               {/* Right Column: Live Chat & Inspector */}
               <div className="lg:col-span-8 h-full min-h-[480px] lg:min-h-0 flex flex-col">
-                <ChatInterface apiKey={apiKey} />
+                <ChatInterface
+                  apiKey={apiKey}
+                  selectedDocument={selectedDocument}
+                  onClearSelectedDocument={() => setSelectedDocument(null)}
+                />
               </div>
             </div>
           )}
@@ -112,13 +122,30 @@ export function App() {
                   apiKey={apiKey}
                   uploadedDocs={uploadedDocs}
                   onDocumentIngested={handleDocumentIngested}
+                  selectedDocument={selectedDocument}
+                  onSelectDocument={setSelectedDocument}
                 />
               </div>
 
               {/* Right Column: Model Arena */}
               <div className="lg:col-span-8 h-full min-h-[480px] lg:min-h-0 flex flex-col">
-                <ModelArena apiKey={apiKey} prompts={prompts} />
+                <ModelArena
+                  apiKey={apiKey}
+                  prompts={prompts}
+                  selectedDocument={selectedDocument}
+                  onClearSelectedDocument={() => setSelectedDocument(null)}
+                />
               </div>
+            </div>
+          )}
+
+          {activeTab === 'explorer' && (
+            <div className="flex-1 min-h-0 flex flex-col">
+              <RagExplorerView
+                apiKey={apiKey}
+                selectedDocument={selectedDocument}
+                onSelectDocument={setSelectedDocument}
+              />
             </div>
           )}
 
@@ -131,6 +158,12 @@ export function App() {
           {activeTab === 'benchmarks' && (
             <div className="flex-1 min-h-0 h-full flex flex-col">
               <BenchmarkLabView apiKey={apiKey} />
+            </div>
+          )}
+
+          {activeTab === 'observability' && (
+            <div className="flex-1 min-h-0 h-full flex flex-col">
+              <ObservabilityView apiKey={apiKey} onNavigateTab={setActiveTab} />
             </div>
           )}
         </main>

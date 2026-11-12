@@ -1,25 +1,32 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
-  Layers,
-  ScrollText,
-  Clock,
-  FlaskConical,
-  Database,
-  Cpu,
-  RefreshCw,
-  ExternalLink,
   ArrowRight,
+  Clock,
+  Cpu,
+  Database,
+  ExternalLink,
+  FlaskConical,
+  Gauge,
+  Layers,
+  RefreshCw,
   ShieldAlert,
+  Timer,
 } from 'lucide-react';
-import { getEvaluationTraces, listBenchmarks } from '../api';
-import { ActiveTab, BenchmarkSummary, HealthResponse, TraceAuditItem } from '../types';
+import { getEvaluationTraces, getPerformanceMetrics, listBenchmarks } from '../api';
+import {
+  ActiveTab,
+  BenchmarkSummary,
+  HealthResponse,
+  PerformanceSummaryResponse,
+  TraceAuditItem,
+} from '../types';
+import { BarDataPoint, InteractiveBarChart } from './charts/InteractiveBarChart';
+import { DonutChart, DonutSegment } from './charts/DonutChart';
+import { InteractiveLineChart, LineDataPoint } from './charts/InteractiveLineChart';
+import { LatencyDistributionPlot } from './charts/LatencyDistributionPlot';
 import { KpiCard } from './common/KpiCard';
 import { StatusBadge } from './common/StatusBadge';
-import { InteractiveLineChart, LineDataPoint } from './charts/InteractiveLineChart';
-import { DonutChart, DonutSegment } from './charts/DonutChart';
-import { LatencyDistributionPlot } from './charts/LatencyDistributionPlot';
-import { InteractiveBarChart, BarDataPoint } from './charts/InteractiveBarChart';
 
 interface OverviewViewProps {
   apiKey: string;
@@ -36,6 +43,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 }) => {
   const [traces, setTraces] = useState<TraceAuditItem[]>([]);
   const [benchmarks, setBenchmarks] = useState<BenchmarkSummary[]>([]);
+  const [perf, setPerf] = useState<PerformanceSummaryResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -44,12 +52,14 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     setIsLoading(true);
     setFetchError(null);
     try {
-      const [traceData, benchData] = await Promise.all([
+      const [traceData, benchData, perfData] = await Promise.all([
         getEvaluationTraces(apiKey, 50).catch(() => [] as TraceAuditItem[]),
         listBenchmarks(apiKey).catch(() => [] as BenchmarkSummary[]),
+        getPerformanceMetrics(apiKey, 100).catch(() => null),
       ]);
       setTraces(traceData);
       setBenchmarks(benchData);
+      setPerf(perfData);
       setLastRefreshed(new Date());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Telemetry sync failed';
@@ -63,19 +73,20 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     loadTelemetry();
   }, [apiKey]);
 
-  // Aggregate Real Metrics
-  const totalQueries = traces.length;
-  const latencies = traces.map((t) => t.execution_time_ms).filter((ms) => ms > 0);
-  const meanLatency =
-    latencies.length > 0
-      ? Math.round(latencies.reduce((acc, v) => acc + v, 0) / latencies.length)
-      : null;
+  const measuredCount = perf?.measured_query_traces ?? 0;
+  const totalTraces = perf?.total_traces ?? traces.length;
+  const meanLatency = perf?.avg_query_latency_ms ?? null;
+  const medianLatency = perf?.median_query_latency_ms ?? null;
+  const p95Latency = perf?.p95_query_latency_ms ?? null;
+  const avgRetrieval = perf?.avg_retrieval_latency_ms ?? null;
+  const avgGeneration = perf?.avg_generation_latency_ms ?? null;
+  const avgEvalMs = perf?.avg_evaluation_duration_ms ?? null;
+  const avgTps = perf?.avg_tokens_per_second ?? null;
 
-  // Evaluation assessments breakdown
+  // Assessment verdicts breakdown
   let passCount = 0;
   let failCount = 0;
   let skippedCount = 0;
-
   traces.forEach((t) => {
     Object.values(t.assessments).forEach((a) => {
       const val = (a.value || '').toLowerCase();
@@ -85,47 +96,101 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     });
   });
 
-  const totalAssessments = passCount + failCount + skippedCount;
-  const reliabilityRate =
-    totalAssessments > 0 ? Math.round((passCount / totalAssessments) * 100) : null;
+  // Chronological trend series from authentic measured query traces
+  const trendItems = perf?.latency_trend ?? [];
+  const validLatencies =
+    perf?.measured_latencies_ms && perf.measured_latencies_ms.length > 0
+      ? perf.measured_latencies_ms.filter((ms) => ms > 0)
+      : trendItems
+          .map((item) => item.total_latency_ms)
+          .filter((ms) => ms > 0);
 
-  // Latency time-series data points (sorted chronologically)
-  const sortedTraces = [...traces].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
-  const latencyChartData: LineDataPoint[] = sortedTraces.map((t) => {
-    const d = new Date(t.timestamp_ms);
-    const timeLabel = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return {
-      label: timeLabel,
-      value: Math.round(t.execution_time_ms),
-      secondaryText: t.question || t.request_id,
-    };
-  });
+  const latencyTrendData: LineDataPoint[] = trendItems.map((item) => ({
+    label: new Date(item.timestamp_ms).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    }),
+    value: Math.round(item.total_latency_ms),
+    secondaryText: item.question_preview || item.request_id,
+  }));
 
-  // Donut chart: Outcome distribution
-  const outcomeData: DonutSegment[] = [
-    { label: 'Passed', value: passCount, color: '#10b981' }, // emerald-500
-    { label: 'Failed', value: failCount, color: '#f43f5e' }, // rose-500
-    { label: 'Pending / Skipped', value: skippedCount, color: '#64748b' }, // slate-500
+  const throughputTrendData: LineDataPoint[] = trendItems
+    .filter((item) => item.tokens_per_second !== null && item.tokens_per_second > 0)
+    .map((item) => ({
+      label: new Date(item.timestamp_ms).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      value: Number((item.tokens_per_second || 0).toFixed(2)),
+      secondaryText: `${item.model || 'llama3.2'} · ${item.question_preview || item.request_id}`,
+    }));
+
+  const evalDurationData: LineDataPoint[] = trendItems
+    .filter((item) => item.evaluation_duration_ms !== null && item.evaluation_duration_ms > 0)
+    .map((item) => ({
+      label: new Date(item.timestamp_ms).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      value: Number(((item.evaluation_duration_ms || 0) / 1000).toFixed(1)),
+      secondaryText: `${item.evaluation_status || 'completed'} · ${item.question_preview || item.request_id}`,
+    }));
+
+  // Retrieval vs Generation comparison bars
+  const stageBarData: BarDataPoint[] =
+    avgRetrieval !== null || avgGeneration !== null || meanLatency !== null
+      ? [
+          {
+            label: 'Retrieval',
+            value: Math.round(avgRetrieval ?? 0),
+            color: '#38bdf8',
+            subtext: 'Embed + Chroma + MMR',
+          },
+          {
+            label: 'Generation',
+            value: Math.round(avgGeneration ?? 0),
+            color: '#818cf8',
+            subtext: 'Local Ollama LLM',
+          },
+          {
+            label: 'Total Query',
+            value: Math.round(meanLatency ?? 0),
+            color: '#10b981',
+            subtext: 'User-facing e2e',
+          },
+        ]
+      : [];
+
+  // Model latency & throughput comparison bars (Llama 3.2 vs Mistral)
+  const llamaPerf = perf?.model_breakdown.find((m) => m.model.toLowerCase().includes('llama'));
+  const mistralPerf = perf?.model_breakdown.find((m) => m.model.toLowerCase().includes('mistral'));
+
+  const modelLatencyBars: BarDataPoint[] = (perf?.model_breakdown ?? []).map((m) => ({
+    label: m.model,
+    value: Math.round(m.avg_generation_latency_ms ?? 0),
+    color: m.model.toLowerCase().includes('mistral') ? '#fbbf24' : '#38bdf8',
+    subtext: `${m.query_count} queries · ${m.avg_tokens_per_second ?? '—'} tok/s`,
+  }));
+
+  // Background Evaluation Lifecycle Distribution Donut
+  const evalCounts = perf?.eval_counts ?? {};
+  const evalCompleted = evalCounts.completed ?? 0;
+  const evalCancelled = evalCounts.cancelled ?? 0;
+  const evalSkipped = evalCounts.skipped ?? 0;
+  const evalFailed = evalCounts.failed ?? 0;
+  const evalPending = (evalCounts.pending ?? 0) + (evalCounts.running ?? 0);
+  const evalTotalTracked =
+    evalCompleted + evalCancelled + evalSkipped + evalFailed + evalPending;
+
+  const evalLifecycleDonut: DonutSegment[] = [
+    { label: 'Completed', value: evalCompleted, color: '#10b981' },
+    { label: 'Cancelled', value: evalCancelled, color: '#f59e0b' },
+    { label: 'Skipped', value: evalSkipped, color: '#64748b' },
+    { label: 'Failed', value: evalFailed, color: '#f43f5e' },
+    { label: 'Pending / Running', value: evalPending, color: '#38bdf8' },
   ];
 
-  // Benchmark history summary
   const latestBenchmark = benchmarks.length > 0 ? benchmarks[0] : null;
-
-  // Bar chart: Model Comparison / Usage
-  const modelBarData: BarDataPoint[] = [
-    {
-      label: 'Llama 3.2',
-      value: traces.filter((t) => !t.model || t.model.includes('llama')).length,
-      color: '#38bdf8',
-      subtext: '3.2B Primary QA',
-    },
-    {
-      label: 'Mistral',
-      value: traces.filter((t) => t.model && t.model.includes('mistral')).length,
-      color: '#fbbf24',
-      subtext: '7B Judge & Arena',
-    },
-  ];
 
   return (
     <div className="flex-1 min-h-0 flex flex-col space-y-5 overflow-y-auto pr-1">
@@ -134,7 +199,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         <div>
           <div className="flex items-center space-x-2">
             <h2 className="text-lg font-bold text-slate-100 tracking-tight">
-              Sentinel Command Centre
+              Sentinel Performance &amp; Observability Centre
             </h2>
             <StatusBadge
               status={health?.status === 'ok' ? 'System Live' : 'Degraded'}
@@ -144,14 +209,19 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             />
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Real-time telemetry, model reliability metrics, and RAG diagnostic streams from MLflow
-            and ChromaDB.
+            Authentic end-to-end RAG query latency, retrieval vs generation split, throughput, and
+            decoupled background judge telemetry from SQLite &amp; MLflow.
           </p>
         </div>
 
         <div className="flex items-center space-x-3">
           <span className="text-[11px] text-slate-500 font-mono hidden sm:inline">
-            Synced: {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            Synced:{' '}
+            {lastRefreshed.toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}
           </span>
 
           <button
@@ -185,125 +255,242 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       {/* Top KPI Metrics Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
-          title="Audited Inferences"
-          value={totalQueries}
-          subtitle="Real SQLite traces stored"
-          icon={<Layers className="w-4 h-4" />}
+          title="Mean Query Latency"
+          value={meanLatency !== null ? Math.round(meanLatency) : '—'}
+          unit={meanLatency !== null ? 'ms' : undefined}
+          subtitle={
+            medianLatency !== null && p95Latency !== null
+              ? `P50: ${Math.round(medianLatency)} ms · P95: ${Math.round(p95Latency)} ms`
+              : `${measuredCount} measured of ${totalTraces} traces`
+          }
+          icon={<Clock className="w-4 h-4" />}
           accent="sky"
-          badge={{ text: 'Live Feed', variant: 'info' }}
+          badge={{ text: `${measuredCount} samples`, variant: 'info' }}
           onClick={() => onNavigateTab('eval')}
         />
 
         <KpiCard
-          title="Mean Execution Latency"
-          value={meanLatency !== null ? meanLatency : '—'}
-          unit={meanLatency !== null ? 'ms' : undefined}
-          subtitle="End-to-end FastAPI roundtrip"
-          icon={<Clock className="w-4 h-4" />}
+          title="Retrieval vs Generation"
+          value={avgRetrieval !== null ? Math.round(avgRetrieval) : '—'}
+          unit={avgRetrieval !== null ? 'ms retr' : undefined}
+          subtitle={
+            avgGeneration !== null
+              ? `Avg generation: ${(avgGeneration / 1000).toFixed(2)} s`
+              : 'No generation timings yet'
+          }
+          icon={<Layers className="w-4 h-4" />}
           accent="indigo"
           badge={
-            meanLatency !== null && meanLatency < 1000
-              ? { text: 'Optimal', variant: 'success' }
-              : { text: 'Monitored', variant: 'neutral' }
+            avgRetrieval !== null && avgRetrieval < 300
+              ? { text: 'Fast Vector', variant: 'success' }
+              : { text: 'Measured', variant: 'neutral' }
           }
         />
 
         <KpiCard
-          title="Judge Reliability Rate"
-          value={reliabilityRate !== null ? `${reliabilityRate}%` : '—'}
-          subtitle={`${passCount} passed of ${totalAssessments} checks`}
-          icon={<ScrollText className="w-4 h-4" />}
-          accent="emerald"
-          badge={
-            reliabilityRate !== null && reliabilityRate >= 70
-              ? { text: 'Compliant', variant: 'success' }
-              : { text: 'Audit Required', variant: 'warning' }
-          }
-          onClick={() => onNavigateTab('eval')}
-        />
-
-        <KpiCard
-          title="Benchmark Pass Rate"
-          value={
-            latestBenchmark?.relevancy_pass_rate !== null &&
-            latestBenchmark?.relevancy_pass_rate !== undefined
-              ? `${latestBenchmark.relevancy_pass_rate}%`
-              : '—'
-          }
+          title="Model Throughput"
+          value={avgTps !== null ? avgTps.toFixed(2) : '—'}
+          unit={avgTps !== null ? 'tok/s' : undefined}
           subtitle={
-            latestBenchmark
-              ? `${latestBenchmark.completed_cases}/${latestBenchmark.total_cases} cases passed`
-              : 'No test runs yet'
+            llamaPerf?.avg_tokens_per_second
+              ? `Llama 3.2 avg: ${llamaPerf.avg_tokens_per_second} tok/s`
+              : 'CPU inference speed'
           }
-          icon={<FlaskConical className="w-4 h-4" />}
+          icon={<Gauge className="w-4 h-4" />}
+          accent="emerald"
+          badge={{ text: `${passCount} pass · ${failCount} fail`, variant: 'success' }}
+        />
+
+        <KpiCard
+          title="Background Judge Eval"
+          value={avgEvalMs !== null ? (avgEvalMs / 1000).toFixed(1) : '—'}
+          unit={avgEvalMs !== null ? 's avg' : undefined}
+          subtitle={
+            perf?.eval_completion_rate !== null && perf?.eval_completion_rate !== undefined
+              ? `${perf.eval_completion_rate}% completed · ${evalCancelled} cancelled · ${evalSkipped} skipped`
+              : latestBenchmark
+              ? `Benchmark: ${latestBenchmark.completed_cases}/${latestBenchmark.total_cases}`
+              : 'Decoupled from user response'
+          }
+          icon={<Timer className="w-4 h-4" />}
           accent="amber"
           badge={{
-            text: latestBenchmark?.status || 'idle',
-            variant: latestBenchmark?.status === 'completed' ? 'success' : 'neutral',
+            text: evalCompleted > 0 ? `${evalCompleted} done` : 'async queue',
+            variant: evalCompleted > 0 ? 'success' : 'neutral',
           }}
-          onClick={() => onNavigateTab('benchmarks')}
+          onClick={() => onNavigateTab('eval')}
         />
       </div>
 
-      {/* Middle Row: Interactive Time Series & Outcome Donut */}
+      {/* Row 1: Query Latency Timeline + Percentiles + Stage Split */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Left Column: Trace Latency Time-Series (7 cols) */}
         <div className="lg:col-span-7 flex flex-col space-y-4">
           <InteractiveLineChart
-            data={latencyChartData}
-            title="Inference Latency Timeline"
-            yAxisLabel="Latency (ms)"
+            data={latencyTrendData}
+            title="Total User-Facing Query Latency Trend (ms)"
+            yAxisLabel="Total Query Latency (ms)"
             unit="ms"
             accentColor="#38bdf8"
             height={220}
-            emptyMessage="No query traces recorded yet. Submit queries in Live Chat to plot real-time latency."
+            emptyMessage="No measured query traces yet. Run queries in Live Chat to populate real query latencies."
             onPointClick={() => onNavigateTab('eval')}
           />
 
-          {/* Latency Percentiles */}
-          <LatencyDistributionPlot latencies={latencies} />
+          <LatencyDistributionPlot
+            latencies={validLatencies}
+            title="Query Latency Distribution (Min · Median P50 · Mean · P90 · P95 · Max)"
+          />
         </div>
 
-        {/* Right Column: Outcomes Donut & Model Usage (5 cols) */}
         <div className="lg:col-span-5 flex flex-col space-y-4">
-          {/* Assessment Donut */}
-          <DonutChart
-            data={outcomeData}
-            title="Judge Evaluation Outcome Distribution"
-            centerLabel="Assessments"
-            centerValue={totalAssessments}
-            emptyMessage="No evaluation assessments recorded yet in MLflow."
-            onSegmentClick={() => onNavigateTab('eval')}
+          <InteractiveBarChart
+            data={stageBarData}
+            title="Retrieval vs Generation Latency Comparison (ms)"
+            unit="ms"
+            height={170}
+            emptyMessage="No stage breakdown captured yet."
+            onBarClick={() => onNavigateTab('eval')}
           />
 
-          {/* Model Workload Breakdown */}
           <InteractiveBarChart
-            data={modelBarData}
-            title="Local Model Workload"
-            unit="queries"
+            data={modelLatencyBars}
+            title="Model Performance Comparison (Avg Generation ms)"
+            unit="ms"
             height={160}
-            emptyMessage="No model inferences recorded yet."
+            emptyMessage="Run queries or Model Arena to compare Llama 3.2 vs Mistral."
             onBarClick={() => onNavigateTab('arena')}
           />
         </div>
       </div>
 
-      {/* Bottom Row: Sentinel Architecture & Quick Navigation */}
+      {/* Row 2: Throughput Trend + Background Judge Duration + Eval State Donut */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div className="lg:col-span-4">
+          <InteractiveLineChart
+            data={throughputTrendData}
+            title="Model Throughput Trend (tok/s)"
+            yAxisLabel="Tokens / sec"
+            unit="tok/s"
+            accentColor="#10b981"
+            height={195}
+            emptyMessage="No token/sec telemetry yet."
+          />
+        </div>
+
+        <div className="lg:col-span-4">
+          <InteractiveLineChart
+            data={evalDurationData}
+            title="Background Judge Duration Trend (s)"
+            yAxisLabel="Judge Duration (s)"
+            unit="s"
+            accentColor="#f59e0b"
+            height={195}
+            emptyMessage="Waiting for completed or cancelled background evaluations."
+            onPointClick={() => onNavigateTab('eval')}
+          />
+        </div>
+
+        <div className="lg:col-span-4">
+          <DonutChart
+            data={evalLifecycleDonut}
+            title="Judge Job Lifecycle Distribution"
+            centerLabel="Eval Jobs"
+            centerValue={evalTotalTracked}
+            emptyMessage="No evaluation jobs recorded yet."
+            onSegmentClick={() => onNavigateTab('eval')}
+          />
+        </div>
+      </div>
+
+      {/* Baseline Snapshot vs Live Optimized Telemetry Reference Card */}
+      <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-200 flex items-center space-x-2">
+              <FlaskConical className="w-4 h-4 text-sky-400" />
+              <span>Phase 2 Baseline vs Live Phase 3 Measured Telemetry</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Compares recorded pre-optimization baseline measurements against live SQLite/MLflow
+              query telemetry without mixing synthetic values.
+            </p>
+          </div>
+          <span className="text-[10px] font-mono text-slate-500">
+            Baseline Source: baseline_results.json · Live Source: /eval/performance
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse text-xs font-mono">
+            <thead>
+              <tr className="border-b border-slate-800 text-[11px] text-slate-400 uppercase">
+                <th className="py-2 pr-4">Metric</th>
+                <th className="py-2 px-4">Phase 2 Baseline (Recorded)</th>
+                <th className="py-2 px-4">Live Measured (Post-Optimization)</th>
+                <th className="py-2 pl-4">Measurement Basis</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/70 text-slate-300">
+              <tr>
+                <td className="py-2 pr-4 text-slate-200">Repeat Retrieval Latency</td>
+                <td className="py-2 px-4 text-amber-300">2,132.48 ms</td>
+                <td className="py-2 px-4 text-emerald-300">
+                  {avgRetrieval !== null ? `${Math.round(avgRetrieval)} ms (mean)` : 'Awaiting live sample'}
+                </td>
+                <td className="py-2 pl-4 text-slate-400">Single-call Chroma + TTL cache</td>
+              </tr>
+              <tr>
+                <td className="py-2 pr-4 text-slate-200">End-to-End Query Latency</td>
+                <td className="py-2 px-4 text-amber-300">32,359.55 ms (Q2 steady)</td>
+                <td className="py-2 px-4 text-emerald-300">
+                  {meanLatency !== null
+                    ? `${Math.round(meanLatency)} ms (P50: ${Math.round(medianLatency ?? meanLatency)} ms)`
+                    : 'Awaiting live sample'}
+                </td>
+                <td className="py-2 pl-4 text-slate-400">num_ctx=2048 + compacted PDF prompt</td>
+              </tr>
+              <tr>
+                <td className="py-2 pr-4 text-slate-200">Background Judge Duration</td>
+                <td className="py-2 px-4 text-amber-300">~310.0 s (blocked compare)</td>
+                <td className="py-2 px-4 text-emerald-300">
+                  {avgEvalMs !== null ? `${(avgEvalMs / 1000).toFixed(1)} s (mean)` : 'Awaiting completed eval'}
+                </td>
+                <td className="py-2 pl-4 text-slate-400">Real socket/LiteLLM preemption</td>
+              </tr>
+              <tr>
+                <td className="py-2 pr-4 text-slate-200">MLflow Trace Metadata</td>
+                <td className="py-2 px-4 text-rose-300">0–2 ms · null prompt/model</td>
+                <td className="py-2 px-4 text-sky-300">
+                  {measuredCount > 0
+                    ? `${measuredCount} traces with model, prompt & stages`
+                    : 'Ready on next query'}
+                </td>
+                <td className="py-2 pl-4 text-slate-400">Direct trace tags + real latency</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Bottom Row: Sentinel Infrastructure & Quick Navigation */}
       <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="text-sm font-semibold text-slate-200">
-              Infrastructure & Pipeline Telemetry
+              Infrastructure &amp; Pipeline Health
             </h3>
             <p className="text-xs text-slate-400">
-              Live status of offline vector database, local LLM inference engines, and tracking stores.
+              Live status of offline vector database, local LLM engines, and trace store.
             </p>
           </div>
-          <span className="text-[11px] text-slate-500 font-mono">Status Check: HTTP 200</span>
+          <span className="text-[11px] text-slate-500 font-mono">
+            {mistralPerf
+              ? `Mistral avg gen: ${Math.round(mistralPerf.avg_generation_latency_ms ?? 0)} ms`
+              : 'Status Check: HTTP 200'}
+          </span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {/* ChromaDB Card */}
           <div className="bg-slate-950/80 border border-slate-800/90 rounded-lg p-3.5 flex items-start space-x-3">
             <div className="w-8 h-8 rounded-lg bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0 mt-0.5">
               <Database className="w-4 h-4" />
@@ -322,12 +509,11 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 mt-1">
-                Embedded vector index using Cosine Distance & nomic-embed-text.
+                Single-query Chroma index with MMR &amp; TTL embedding cache.
               </p>
             </div>
           </div>
 
-          {/* Ollama Card */}
           <div className="bg-slate-950/80 border border-slate-800/90 rounded-lg p-3.5 flex items-start space-x-3">
             <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0 mt-0.5">
               <Cpu className="w-4 h-4" />
@@ -346,12 +532,11 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 mt-1">
-                Local runtime serving Llama 3.2 (3B) and Mistral (7B).
+                CPU-tuned Llama 3.2 (3B) &amp; Mistral (7B) with num_ctx=2048.
               </p>
             </div>
           </div>
 
-          {/* MLflow Card */}
           <div className="bg-slate-950/80 border border-slate-800/90 rounded-lg p-3.5 flex items-start space-x-3">
             <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
               <Activity className="w-4 h-4" />
@@ -364,13 +549,12 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 mt-1">
-                Persistent trace catalog tracking Relevancy, Grounding, and Safety.
+                Accurate query traces, stage timings, and judge job audit log.
               </p>
             </div>
           </div>
         </div>
 
-        {/* Action jump links */}
         <div className="mt-4 pt-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
           <span className="text-slate-400">Jump directly to workspace:</span>
           <div className="flex flex-wrap items-center gap-2">
@@ -392,7 +576,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
               onClick={() => onNavigateTab('eval')}
               className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white transition flex items-center space-x-1"
             >
-              <span>Evaluation & Traces</span>
+              <span>Evaluation &amp; Traces</span>
               <ArrowRight className="w-3 h-3 text-sky-400" />
             </button>
             <button
